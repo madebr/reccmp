@@ -6,6 +6,7 @@ Based on the following resources:
 """
 
 import dataclasses
+import datetime
 from enum import IntEnum, IntFlag
 from functools import cached_property
 from pathlib import Path
@@ -35,11 +36,10 @@ class PEMachine(IntEnum):
     IMAGE_FILE_MACHINE_ALPHA64 = 0x284
     IMAGE_FILE_MACHINE_AM33 = 0x1D3
     IMAGE_FILE_MACHINE_AMD64 = 0x8664
-    IMAGE_FILE_MACHINE_ARM = 0x1C0
+    IMAGE_FILE_MACHINE_ARM = 0x1C0  # armv4
     IMAGE_FILE_MACHINE_ARM64 = 0xAA64
-    IMAGE_FILE_MACHINE_ARMNT = 0x1C4
-    IMAGE_FILE_MACHINE_AXP64 = 0x284
-    IMAGE_FILE_MACHINE_EBC = 0xEBC
+    IMAGE_FILE_MACHINE_ARMNT = 0x1C4  # armv7
+    IMAGE_FILE_MACHINE_EBC = 0xEBC  # EFI
     IMAGE_FILE_MACHINE_I386 = 0x14C
     IMAGE_FILE_MACHINE_IA64 = 0x200
     IMAGE_FILE_MACHINE_LOONGARCH32 = 0x6232
@@ -73,7 +73,7 @@ class PECharacteristics(IntFlag):
     IMAGE_FILE_BYTES_REVERSED_LO = 0x0080
     IMAGE_FILE_32BIT_MACHINE = 0x0100
     IMAGE_FILE_DEBUG_STRIPPED = 0x0200
-    IMAGE_FILE_REMOVABLE_RUN_ = 0x0400
+    IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP = 0x0400
     IMAGE_FILE_NET_RUN_FROM_SWAP = 0x0800
     IMAGE_FILE_SYSTEM = 0x1000
     IMAGE_FILE_DLL = 0x2000
@@ -85,9 +85,9 @@ class PECharacteristics(IntFlag):
 @dataclasses.dataclass(frozen=True)
 class PEImageFileHeader:
     signature: bytes
-    machine: int
+    machine: PEMachine
     number_of_sections: int
-    time_date_stamp: int
+    time_date_stamp: datetime.datetime
     pointer_to_symbol_table: int  # deprecated
     number_of_symbols: int  # deprecated
     size_of_optional_header: int
@@ -104,6 +104,7 @@ class PEImageFileHeader:
             items[1] = PEMachine(items[1])
         except ValueError as e:
             raise UnknownPEMachine(f"0x{items[1]:x}") from e
+        items[3] = datetime.datetime.fromtimestamp(items[7])
         items[7] = PECharacteristics(items[7])
         return cls(*items), offset
 
@@ -263,48 +264,70 @@ class PEImageOptionalHeader:
         )
 
 
+_IMAGE_SCN_ALIGN: dict[int, int] = {
+    0x00100000 : 1,    # IMAGE_SCN_ALIGN_1BYTES
+    0x00200000 : 2,    # IMAGE_SCN_ALIGN_2BYTES
+    0x00300000 : 4,    # IMAGE_SCN_ALIGN_4BYTES
+    0x00400000 : 8,    # IMAGE_SCN_ALIGN_8BYTES
+    0x00500000 : 1,    # IMAGE_SCN_ALIGN_16BYTES
+    0x00600000 : 3,    # IMAGE_SCN_ALIGN_32BYTES
+    0x00700000 : 6,    # IMAGE_SCN_ALIGN_64BYTES
+    0x00800000 : 1,    # IMAGE_SCN_ALIGN_128BYTES
+    0x00900000 : 2,    # IMAGE_SCN_ALIGN_256BYTES
+    0x00A00000 : 5,    # IMAGE_SCN_ALIGN_512BYTES
+    0x00B00000 : 1,    # IMAGE_SCN_ALIGN_1024BYTES
+    0x00C00000 : 2,    # IMAGE_SCN_ALIGN_2048BYTES
+    0x00D00000 : 4,    # IMAGE_SCN_ALIGN_4096BYTES
+    0x00E00000 : 8,    # IMAGE_SCN_ALIGN_8192BYTES
+}
+
+
 class PESectionFlags(IntFlag):
-    IMAGE_SCN_RESERVED_0X0 = 0x00000000
-    IMAGE_SCN_RESERVED_0X1 = 0x00000001
-    IMAGE_SCN_RESERVED_0X2 = 0x00000002
-    IMAGE_SCN_RESERVED_0X4 = 0x00000004
-    IMAGE_SCN_TYPE_NO_PAD = 0x00000008
-    IMAGE_SCN_RESERVED_0X10 = 0x00000010
-    IMAGE_SCN_CNT_CODE = 0x00000020
-    IMAGE_SCN_CNT_INITIALIZED_DATA = 0x00000040
-    IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080
-    IMAGE_SCN_LNK_OTHER = 0x00000100
-    IMAGE_SCN_LNK_INFO = 0x00000200
-    IMAGE_SCN_RESERVED_0X400 = 0x00000400
-    IMAGE_SCN_LNK_REMOVE = 0x00000800
-    IMAGE_SCN_LNK_COMDAT = 0x00001000
-    IMAGE_SCN_GPREL = 0x00008000
-    IMAGE_SCN_MEM_PURGEABLE = 0x00020000
-    IMAGE_SCN_MEM_16BIT = 0x00020000
-    IMAGE_SCN_MEM_LOCKED = 0x00040000
-    IMAGE_SCN_MEM_PRELOAD = 0x00080000
-    # IMAGE_SCN_ALIGN_1BYTES = 0x00100000
-    # IMAGE_SCN_ALIGN_2BYTES = 0x00200000
-    # IMAGE_SCN_ALIGN_4BYTES = 0x00300000
-    # IMAGE_SCN_ALIGN_8BYTES = 0x00400000
-    # IMAGE_SCN_ALIGN_16BYTES = 0x00500000
-    # IMAGE_SCN_ALIGN_32BYTES = 0x00600000
-    # IMAGE_SCN_ALIGN_64BYTES = 0x00700000
-    # IMAGE_SCN_ALIGN_128BYTES = 0x00800000
-    # IMAGE_SCN_ALIGN_256BYTES = 0x00900000
-    # IMAGE_SCN_ALIGN_512BYTES = 0x00A00000
-    # IMAGE_SCN_ALIGN_1024BYTES = 0x00B00000
-    # IMAGE_SCN_ALIGN_2048BYTES = 0x00C00000
-    # IMAGE_SCN_ALIGN_4096BYTES = 0x00D00000
-    # IMAGE_SCN_ALIGN_8192BYTES = 0x00E00000
-    IMAGE_SCN_LNK_NRELOC_OVFL = 0x01000000
-    IMAGE_SCN_MEM_DISCARDABLE = 0x02000000
-    IMAGE_SCN_MEM_NOT_CACHED = 0x04000000
-    IMAGE_SCN_MEM_NOT_PAGED = 0x08000000
-    IMAGE_SCN_MEM_SHARED = 0x10000000
-    IMAGE_SCN_MEM_EXECUTE = 0x20000000
-    IMAGE_SCN_MEM_READ = 0x40000000
-    IMAGE_SCN_MEM_WRITE = 0x80000000
+    IMAGE_SCN_RESERVED_0X0 = 0x00000000             # Reserved for future use.
+    IMAGE_SCN_RESERVED_0X1 = 0x00000001             # Reserved for future use.
+    IMAGE_SCN_RESERVED_0X2 = 0x00000002             # Reserved for future use.
+    IMAGE_SCN_RESERVED_0X4 = 0x00000004             # Reserved for future use.
+    IMAGE_SCN_TYPE_NO_PAD = 0x00000008              # The section should not be padded to the next boundary. This flag is obsolete and is replaced by IMAGE_SCN_ALIGN_1BYTES. This is valid only for object files.
+    IMAGE_SCN_RESERVED_0X10 = 0x00000010            # Reserved for future use.
+    IMAGE_SCN_CNT_CODE = 0x00000020                 # The section contains executable code.
+    IMAGE_SCN_CNT_INITIALIZED_DATA = 0x00000040     # The section contains initialized data.
+    IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080   # The section contains uninitialized data.
+    IMAGE_SCN_LNK_OTHER = 0x00000100                # Reserved for future use.
+    IMAGE_SCN_LNK_INFO = 0x00000200                 # The section contains comments or other information. The .drectve section has this type. This is valid for object files only.
+    IMAGE_SCN_RESERVED_0X400 = 0x00000400           # Reserved for future use.
+    IMAGE_SCN_LNK_REMOVE = 0x00000800               # The section will not become part of the image. This is valid only for object files.
+    IMAGE_SCN_LNK_COMDAT = 0x00001000               # The section contains COMDAT data. This is valid only for object files.
+    IMAGE_SCN_GPREL = 0x00008000                    # The section contains data referenced through the global pointer (GP).
+    IMAGE_SCN_MEM_PURGEABLE = 0x00020000            # Reserved for future use.
+    IMAGE_SCN_MEM_16BIT = 0x00020000                # Reserved for future use.
+    IMAGE_SCN_MEM_LOCKED = 0x00040000               # Reserved for future use.
+    IMAGE_SCN_MEM_PRELOAD = 0x00080000              # Reserved for future use.
+    # IMAGE_SCN_ALIGN_1BYTES = 0x00100000             # Align data on a 1-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_2BYTES = 0x00200000             # Align data on a 2-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_4BYTES = 0x00300000             # Align data on a 4-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_8BYTES = 0x00400000             # Align data on an 8-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_16BYTES = 0x00500000            # Align data on a 16-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_32BYTES = 0x00600000            # Align data on a 32-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_64BYTES = 0x00700000            # Align data on a 64-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_128BYTES = 0x00800000           # Align data on a 128-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_256BYTES = 0x00900000           # Align data on a 256-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_512BYTES = 0x00A00000           # Align data on a 512-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_1024BYTES = 0x00B00000          # Align data on a 1024-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_2048BYTES = 0x00C00000          # Align data on a 2048-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_4096BYTES = 0x00D00000          # Align data on a 4096-byte boundary. Valid only for object files.
+    # IMAGE_SCN_ALIGN_8192BYTES = 0x00E00000          # Align data on an 8192-byte boundary. Valid only for object files.
+    IMAGE_SCN_LNK_NRELOC_OVFL = 0x01000000          # The section contains extended relocations.
+    IMAGE_SCN_MEM_DISCARDABLE = 0x02000000          # The section can be discarded as needed.
+    IMAGE_SCN_MEM_NOT_CACHED = 0x04000000           # The section cannot be cached.
+    IMAGE_SCN_MEM_NOT_PAGED = 0x08000000            # The section is not pageable.
+    IMAGE_SCN_MEM_SHARED = 0x10000000               # The section can be shared in memory.
+    IMAGE_SCN_MEM_EXECUTE = 0x20000000              # The section can be executed as code.
+    IMAGE_SCN_MEM_READ = 0x40000000                 # The section can be read.
+    IMAGE_SCN_MEM_WRITE = 0x80000000                # The section can be written to.
+
+    @property
+    def alignment(self) -> int:
+        return _IMAGE_SCN_ALIGN[self.value & 0xf00000]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -420,7 +443,7 @@ class DebugDirectoryEntryHeader:
     time_data_stamp: int  # The time and date that the debug data was created.
     major_version: int  # The major version number of the debug data format.
     minor_version: int  # The minor version number of the debug data format.
-    type: int  # The format of debugging information. This field enables support of multiple debuggers. For more information, see Debug Type.
+    type: int  # The format of debugging information. This field enables support of multiple debuggers.
     size_of_data: (
         int  # The size of the debug data (not including the debug directory itself).
     )

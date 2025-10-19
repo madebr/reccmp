@@ -3,3 +3,5 @@ from .image import Image
 from .mz import MZImage
 from .ne import NEImage
 from .pe import PEImage
+from .coff import COFFObject
+from .omf import OMFObject

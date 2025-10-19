@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from .coff import COFFObject
 from .elf import ElfImage
 from .image import Image
 from .lx import LXImage
@@ -7,6 +8,7 @@ from .macho import MachOImage
 from .mz import ImageDosHeader, MZImage
 from .ne import NEImage
 from .pe import PEImage
+from .omf import OMFObject
 
 
 def detect_image(filepath: Path | str) -> Image:
@@ -31,5 +33,9 @@ def detect_image(filepath: Path | str) -> Image:
         return ElfImage.from_memory(data, offset=0, filepath=filepath)
     if MachOImage.taste(data, offset=0):
         return MachOImage.from_memory(data, offset=0, filepath=filepath)
+    if COFFObject.taste(data, offset=0):
+        return COFFObject.from_memory(data, offset=0, filepath=filepath)
+    if OMFObject.taste(data, offset=0):
+        return OMFObject.from_memory(data, offset=0, filepath=filepath)
 
     raise ValueError("Unknown file format")
