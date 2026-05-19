@@ -7,6 +7,7 @@ from typing import Callable, Iterator, NamedTuple, TypeVar, cast
 # pylint: disable=too-many-return-statements # a `match` would be better, but for now we are stuck with Python 3.9
 # pylint: disable=no-else-return # Not sure why this rule even is a thing, this is great for checking exhaustiveness
 
+from java.lang.reflect import Array
 from ghidra.program.flatapi import FlatProgramAPI
 from ghidra.program.model.data import (
     ArrayDataType,
@@ -15,6 +16,9 @@ from ghidra.program.model.data import (
     DataTypeConflictHandler,
     Enum,
     EnumDataType,
+    FunctionDefinitionDataType,
+    ParameterDefinition,
+    ParameterDefinitionImpl,
     StructureDataType,
     StructureInternal,
     TypedefDataType,
@@ -127,6 +131,8 @@ class PdbTypeImporter:
                 type_pdb,
             )
             return self._import_scalar_type(CVInfoTypeEnum.T_VOID)
+        elif type_category == "LF_MFUNCTION":
+            return self._import_function(type_pdb)
         elif type_category == "LF_UNION":
             return self._import_union(type_pdb)
         else:
@@ -224,8 +230,11 @@ class PdbTypeImporter:
     ) -> DataType:
         field_list_type = type_in_pdb["field_list_type"]
         field_list = self.types.keys[field_list_type]
-
-        class_size: int = type_in_pdb["size"]
+        try:
+            class_size: int = type_in_pdb["size"]
+        except KeyError:
+            print(f"failure {type_in_pdb=}")
+            raise
         raw_name: str = type_in_pdb["name"]
         if slim_for_vbase:
             raw_name += "_vbase_slim"
@@ -312,6 +321,53 @@ class PdbTypeImporter:
         logger.info("Finished importing class %s", sanitized_name)
 
         return new_ghidra_struct
+
+    COUNT = 0
+    def _import_function(self, field_list: CvdumpParsedType):
+        # FIXME: proper name (e.g. vtable prefix+TYPE+OFFSET+suffix, orprefix+name+suffix)
+        name = f"reccmp_function_{self.COUNT}"
+        self.COUNT += 1
+        return_ghidra_type = self.import_pdb_type_into_ghidra(
+            field_list["return_type"], slim_for_vbase=False)
+
+        arg_list_obj = self.extraction.compare.types.keys[field_list["arg_list_type"]]
+        arg_params = []
+        if field_list["call_type"] == "ThisCall":
+            # FIXME: property this type
+            arg_params.append(
+                ParameterDefinitionImpl(
+                    "this",
+                    get_or_add_pointer_type(
+                        self.api,
+                        self._import_scalar_type(CVInfoTypeEnum.T_VOID),
+                    ),
+                    ""
+                )
+            )
+        for arg_i, arg in enumerate(arg_list_obj.get("args", []), 1):
+            arg_params.append(ParameterDefinitionImpl(
+                f"p_arg{arg_i}",
+                self.import_pdb_type_into_ghidra(arg, slim_for_vbase=False),
+                "",
+            ))
+        java_arg_params = Array.newInstance(ParameterDefinition, len(arg_params))
+
+        for i, v in enumerate(arg_params):
+            java_arg_params[i] = v
+        function_def = FunctionDefinitionDataType(name)
+        function_def.setArguments(java_arg_params)
+        function_def.setReturnType(return_ghidra_type)
+        if field_list["call_type"] == "ThisCall":
+            function_def.setCallingConvention("__thiscall")
+
+        data_type = (
+            self.api.getCurrentProgram()
+            .getDataTypeManager()
+            .addDataType(function_def, DataTypeConflictHandler.KEEP_HANDLER)
+        )
+        print("returned type is ", type(data_type), data_type)
+        # assert isinstance(data_type, StructureInternal)  # for type checking
+        return data_type
 
     def _get_components_from_base_classes(
         self, field_list: CvdumpParsedType

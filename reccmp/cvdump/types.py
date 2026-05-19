@@ -43,6 +43,15 @@ class FieldListItem(NamedTuple):
     type: CvdumpTypeKey
 
 
+class FieldListVirtualMethodItem(NamedTuple):
+    """Virtual method of a class or structure"""
+
+    offset: int
+    name: str
+    type: CvdumpTypeKey
+    pure: bool
+
+
 class EnumItem(NamedTuple):
     name: str
     value: int
@@ -150,6 +159,8 @@ class CvdumpParsedType(TypedDict):
     super: NotRequired[dict[CvdumpTypeKey, int]]
     vbase: NotRequired[VirtualBasePointer]
     members: NotRequired[list[FieldListItem]]
+    new_vmethods: NotRequired[list[FieldListVirtualMethodItem]]
+    vtable: NotRequired[CvdumpTypeKey]
     variants: NotRequired[list[EnumItem]]
 
     # LF_ARGLIST
@@ -172,9 +183,22 @@ class CvdumpParsedType(TypedDict):
     this_adjust: NotRequired[int]
 
 
+class CustomTypeKeyGenerator:
+    def __init__(self, v: int):
+        self._v = v
+
+    def generate(self) -> CvdumpTypeKey:
+        key = CvdumpTypeKey(self._v)
+        self._v += 1
+        return key
+
+
 class CvdumpTypesParser:
     """Parser for cvdump output, TYPES section.
     Tricky enough that it demands its own parser."""
+
+    # Name of temporary virtual function table
+    MOCK_VFTABLE = "reccmp_mock_vftable"
 
     # Marks the start of a new type
     INDEX_RE = re.compile(r"(?P<key>0x\w+) : .* (?P<type>LF_\w+)")
@@ -194,7 +218,12 @@ class CvdumpTypesParser:
 
     # LF_FIELDLIST virtual direct/indirect base pointer
     VBCLASS_RE = re.compile(
-        r"list\[\d+\] = LF_(?P<indirect>I?)VBCLASS, .* base type = (?P<type>[^,]*)\n\s+virtual base ptr = [^,]+, vbpoff = (?P<vboffset>\d+), vbind = (?P<vbindex>\d+)"
+        r"list\[\d+\] = LF_(?P<indirect>I?)VBCLASS, .* base type = (?P<type>[^ \t\n\r,]*)\n\s+virtual base ptr = [^,]+, vbpoff = (?P<vboffset>\d+), vbind = (?P<vbindex>\d+)"
+    )
+
+    # LF_FIELDLIST virtual method (ignore compgenx)
+    LF_FIELDLIST_INTRODUCING_VIRTUAL = re.compile(
+        r"list\[\d+\] = LF_ONEMETHOD, (?:public|private|protected), (?P<intro_pure>INTRODUCING VIRTUAL|PURE INTRO), index = (?P<type>[^,]*),\s+vfptr offset = (?P<offset>[^,]*), name = '(?P<name>[^']*)'"
     )
 
     LF_FIELDLIST_ENUMERATE = re.compile(
@@ -491,8 +520,9 @@ class CvdumpTypesParser:
         members = self.get_scalars_gapless(type_key)
         return member_list_to_struct_string(members)
 
-    def read_all(self, section: str):
+    def read_all(self, section: str, create_vtables: bool=True):
         r_leafsplit = re.compile(r"\n(?=0x\w{4,8} : )")
+        struct_ids = []
         for leaf in r_leafsplit.split(section):
             if (match := self.INDEX_RE.match(leaf)) is None:
                 continue
@@ -511,6 +541,7 @@ class CvdumpTypesParser:
                         self.keys[leaf_id] = self.read_array(leaf, leaf_type)
 
                     case "LF_FIELDLIST":
+                        print(f"leaf_id=0x{leaf_id:x}")
                         self.keys[leaf_id] = self.read_fieldlist(leaf, leaf_type)
 
                     case "LF_ARGLIST":
@@ -524,6 +555,7 @@ class CvdumpTypesParser:
 
                     case "LF_CLASS" | "LF_STRUCTURE":
                         self.keys[leaf_id] = self.read_class_or_struct(leaf, leaf_type)
+                        struct_ids.append(leaf_id)
 
                     case "LF_POINTER":
                         self.keys[leaf_id] = self.read_pointer(leaf, leaf_type)
@@ -538,8 +570,91 @@ class CvdumpTypesParser:
                         # Check for exhaustiveness
                         logger.error("Unhandled data in mode: %s", leaf_type)
 
-            except AssertionError:
-                logger.error("Failed to parse PDB types leaf:\n%s", leaf)
+            finally:#except AssertionError:
+                pass# logger.error("Failed to parse PDB types leaf:\n%s", leaf)
+                # raise
+
+        key_generator = CustomTypeKeyGenerator(max(self.keys.keys()) + 1)
+        for struct_id in struct_ids:
+            struct_obj = self.keys[struct_id]
+            print("Checking", struct_obj["name"])
+            if "is_forward_ref" in struct_obj and struct_obj["is_forward_ref"]:
+                continue
+            if "udt" not in struct_obj:
+                continue
+            if struct_obj["udt"] != struct_id:
+                continue
+            struct_fields_id = struct_obj["field_list_type"]
+            if struct_fields_id not in self.keys:
+                continue
+            struct_fields_obj = self.keys[struct_fields_id]
+            if not struct_fields_obj.get("new_vmethods"):
+                continue
+
+            # Find parent with vtable
+            parent_with_vtable_id = struct_id
+            parent_with_vtable_obj = struct_obj
+            while True:
+                parent_with_vtable_fields_id = parent_with_vtable_obj["field_list_type"]
+                parent_with_vtable_fields_obj = self.keys[parent_with_vtable_fields_id]
+                if parent_with_vtable_fields_obj.get("vtable"):
+                    parent_vtable_id = self.keys[parent_with_vtable_fields_obj.get("vtable")]
+                    break
+                if not parent_with_vtable_obj.get("super"):
+                    parent_with_vtable_obj = None
+                    del parent_with_vtable_id
+                    del parent_with_vtable_fields_id
+                    del parent_with_vtable_fields_obj
+                    break
+                # Select parent with lowest offset
+                parent_with_vtable_id, _ = min(parent_with_vtable_obj.get("super").items(), key=lambda parent_id_offset: parent_id_offset[1])
+                parent_with_vtable_obj = self.keys[parent_with_vtable_id]
+
+            vtable_fields_obj: CvdumpParsedType = {"type": "LF_FIELDLIST"}
+            if parent_with_vtable_obj:
+                vtable_fields_obj["super"] = parent_vtable_id
+            vtable_members = []
+            max_offset = None
+            for vmethod in struct_fields_obj["new_vmethods"]:
+                item_pointer_type = key_generator.generate()
+                vtable_item_obj: CvdumpParsedType = {
+                    "type": "LF_POINTER",
+                    "element_type": vmethod.type,
+                    "pointer_type": "Pointer",
+                }
+                self.keys[item_pointer_type] = vtable_item_obj
+                vtable_members.append(FieldListItem(
+                    offset=vmethod.offset,
+                    type=item_pointer_type,
+                    name=vmethod.name,
+                ))
+                max_offset = max(max_offset, vmethod.offset) if max_offset is not None else vmethod.offset
+            vtable_fields_obj["members"] = vtable_members
+            vtable_field_id = key_generator.generate()
+            self.keys[vtable_field_id] = vtable_fields_obj
+            vtable_obj: CvdumpParsedType = {
+                "type": "LF_STRUCTURE",
+                "name": f"reccmp_vtable_{struct_obj['name']}",
+                "field_list_type": vtable_field_id,
+                "size": max_offset + 4,
+            }
+            vtable_id = key_generator.generate()
+            self.keys[vtable_id] = vtable_obj
+            vtable_pointer_obj: CvdumpParsedType = {
+                "type": "LF_POINTER",
+                "element_type": vtable_id,
+                "pointer_type": "Pointer",
+            }
+            vtable_pointer_id = key_generator.generate()
+            self.keys[vtable_pointer_id] = vtable_pointer_obj
+            if "members" in struct_fields_obj:
+                struct_first_member = struct_fields_obj["members"][0]
+                if struct_first_member.name == self.MOCK_VFTABLE:
+                    struct_fields_obj["members"][0] = FieldListItem(
+                        offset=struct_first_member.offset,
+                        name="vfptr",
+                        type=vtable_pointer_id,
+                    )
 
     def read_modifier(self, leaf: str, leaf_type: str) -> CvdumpParsedType:
         match = self.MODIFIES_RE.search(leaf)
@@ -567,13 +682,6 @@ class CvdumpTypesParser:
     def read_fieldlist(self, leaf: str, leaf_type: str) -> CvdumpParsedType:
         obj: CvdumpParsedType = {"type": leaf_type}
         members: list[FieldListItem] = []
-
-        # If this class has a vtable, create a mock member at offset 0
-        if self.VTABLE_RE.search(leaf) is not None:
-            # For our purposes, any pointer type will do
-            members.append(
-                FieldListItem(offset=0, type=CVInfoTypeEnum.T_32PVOID, name="vftable")
-            )
 
         # Superclass is set here in the fieldlist rather than in LF_CLASS
         for match in self.SUPERCLASS_RE.finditer(leaf):
@@ -621,6 +729,32 @@ class CvdumpTypesParser:
             virtual_base_pointer.bases[-1].index = int(match.group("vbindex"))
             # these come out of order, and the lists are so short that it's fine to sort them every time
             virtual_base_pointer.bases.sort(key=lambda x: x.index)
+
+        new_vmethods = []
+        for match in self.LF_FIELDLIST_INTRODUCING_VIRTUAL.finditer(leaf):
+            is_pure = {
+                "INTRODUCING VIRTUAL": False,
+                "PURE INTRO": True,
+            }[match["intro_pure"]]
+            new_vmethods.append(
+                FieldListVirtualMethodItem(
+                    offset=int(match["offset"]),
+                    name=match["name"],
+                    type=CvdumpTypeKey.from_str(match["type"]),
+                    pure=is_pure,
+                )
+            )
+        if new_vmethods:
+            obj["new_vmethods"] = new_vmethods
+
+        # If this class has a vtable, create a mock member at offset 0
+        if self.VTABLE_RE.search(leaf) is not None:
+            # assert new_vmethods, f"LF_VFUNCTAB => LF_ONEMETHOD INTRODUCING VIRTUAL ({leaf})"
+            print("Adding dummy vftable pointer")
+            # For our purposes, any pointer type will do
+            members.append(
+                FieldListItem(offset=0, type=CVInfoTypeEnum.T_32PVOID, name=self.MOCK_VFTABLE)
+            )
 
         members += [
             FieldListItem(

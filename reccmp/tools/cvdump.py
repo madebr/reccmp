@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 
 import argparse
+import logging
 from pathlib import Path
 import subprocess
 
 import reccmp
 from reccmp.cvdump.runner import DumpOpt, Cvdump
+from reccmp.project.logging import argparse_add_logging_args, argparse_parse_logging
+
+logger = logging.getLogger(__name__)
 
 # cvdump.exe arguments:
 # Usage: cvdump [-?] [-asmin] [-coffsymrva] [-fixup] [-fpo] [-ftm] [-g]
@@ -83,7 +87,9 @@ def parse_args() -> argparse.Namespace:
         const=DumpOpt.TYPES,
         help="TYPES",
     )
+    argparse_add_logging_args(parser)
     args = parser.parse_args()
+    argparse_parse_logging(args=args)
 
     if not args.pdb_path.is_file():
         parser.error(f"File not found: {args.pdb_path}")
@@ -98,12 +104,14 @@ def main():
     if args.options:
         cv.options.update(args.options)
 
+    cmd_line = cv.cmd_line()
+    logger.debug("Command: %r", cmd_line)
     if args.out_file:
         with open(args.out_file, "w+", encoding="utf-8") as f:
-            with subprocess.Popen(cv.cmd_line(), stdout=f):
+            with subprocess.Popen(cmd_line, stdout=f):
                 pass
     else:
-        with subprocess.Popen(cv.cmd_line()):
+        with subprocess.Popen(cmd_line):
             pass
 
 
